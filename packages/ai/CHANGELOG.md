@@ -1,5 +1,329 @@
 # @tanstack/ai
 
+## 0.43.0
+
+### Minor Changes
+
+- [#970](https://github.com/TanStack/ai/pull/970) [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a) - Adopt the AG-UI interrupt lifecycle for tool approvals, generic responses, and
+  client-tool execution, with typed bound resolvers, atomic batches, and
+  structured errors. Interrupts run ephemerally by resuming from the full client
+  message history in a fresh child run — no persistence required.
+
+  This changes native approval and client-tool streams from legacy custom events
+  to snapshot-plus-`RUN_FINISHED` interrupt outcomes. Deprecated
+  `pendingInterrupts`, `addToolApprovalResponse`, raw `resumeInterrupts`, and
+  legacy event readers remain as limited compatibility surfaces for migration;
+  `addToolResult` remains supported.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Add `defineLock` to `@tanstack/ai/locks`: an identity typer for a `LockStore`
+  implementation, matching the `define*Store` helpers in `@tanstack/ai-persistence`.
+  Pass a `withLock` object and get autocomplete and contract checking inline, with
+  no `: LockStore` annotation, then hand it to `withLocks`.
+
+  ```ts
+  import { defineLock, withLocks } from '@tanstack/ai/locks'
+
+  const locks = defineLock({
+    async withLock(key, fn) {
+      const { release, signal } = await acquire(key)
+      try {
+        return await fn(signal)
+      } finally {
+        release()
+      }
+    },
+  })
+
+  const middleware = [withLocks(locks)]
+  ```
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Make a reload rejoin fast, robust, and repeatable.
+  - **`memoryStream` first-chunk deadline now defaults to 100ms** (was 30s). The
+    common from-start join is a reload rejoining a run whose producer ran in a
+    prior request: an in-flight run's log already holds chunks (it streams
+    immediately, the deadline never applies), and an empty log means the run is
+    gone — so failing fast lets the client re-enable input near-instantly instead
+    of holding a dead connection open. Raise `firstChunkDeadlineMs` for a backend
+    whose producer can legitimately start well after a joiner attaches.
+  - **`ChatClient` reload rejoin hardened:** it bounds the wait for the first
+    chunk and clears a dead resume pointer (so a stale pointer can't pin the UI in
+    a loading state and can't be retried on the next load); it drops the hydrated
+    in-flight partial only when real content arrives (never on `RUN_STARTED`
+    alone), so a rejoin that connects but delivers nothing can't leave an empty
+    assistant bubble; and it no longer lets a replayed `RUN_STARTED` (which
+    carries the provider run id) overwrite the persisted resume pointer with an id
+    the durability log isn't keyed by — so a SECOND consecutive reload still
+    re-attaches and continues.
+
+- [#970](https://github.com/TanStack/ai/pull/970) [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a) - Make interrupt ownership explicit rather than assumed.
+
+  An AG-UI `Interrupt` is a shared envelope — a workflow engine's durable
+  approval or another agent framework's pause can arrive on the same stream. What
+  makes a pause resumable through `chat()` is the binding this package attaches
+  under `tanstack:interruptBinding`.
+  - Interrupts that carry no binding this client understands now surface as
+    `kind: 'unbound'` with `canResolve: false`, instead of being given a
+    synthesized binding and rendered as resolvable generic interrupts. Resolving
+    those produced an answer submitted against a run with nothing pending, which
+    failed as `unknown-interrupt` only after the user had filled in the form.
+    Unbound items never block submission of the interrupts that are yours.
+  - The binding carries a wire version (`INTERRUPT_BINDING_VERSION`). Readers
+    reject a version they don't recognise rather than duck-typing its fields. A
+    binding written before the field existed is still read.
+  - `INTERRUPT_BINDING_METADATA_KEY`, `withInterruptBinding()` and
+    `readInterruptBinding()` are exported, so anything producing an interrupt this
+    package must later resume attaches the binding through a supported API
+    instead of copying the metadata key.
+  - Interrupt classification is driven by the binding alone. `Interrupt.reason` is
+    free-form AG-UI text another producer can also use, so it is now a display
+    hint only and never decides ownership.
+  - The interrupt protocol surface is enumerated instead of `export *`. The
+    unimplemented durable-recovery contract (`InterruptRecoveryStateV1`,
+    `InterruptRecoveryQuery`, the never-called `loadInterruptState` adapter hook,
+    and the `persistence-required` / `atomic-commit-unsupported` /
+    `recovery-unavailable` error codes) is removed rather than published.
+
+- [#970](https://github.com/TanStack/ai/pull/970) [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a) - Interrupts: the application owns wire-schema validation, and the hashing
+  dependency is gone.
+
+  The library no longer transforms a generic interrupt's wire JSON Schema into a
+  validator or validates the resolved value against it, on either the client or
+  the server. Whatever you pass to `resolveInterrupt` (client) or send in the
+  `resume` batch (server) flows through as-is. Validate it yourself if you need to
+  trust it, e.g. with `z.fromJSONSchema(interrupt.responseSchema).safeParse(value)`
+  on the client and your own check on the server. Validation of a tool's
+  code-authored Standard Schema (`approvalSchema` / `inputSchema`) is unchanged.
+
+  This drops the `ajv` and `ajv-formats` dependencies. Interrupt binding hashes and
+  resolution fingerprints now use a small bundled SHA-256 instead of
+  `@noble/hashes`, so that dependency is gone too. The wire hash shape
+  (`sha256:<hex>`) is unchanged.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Move multi-instance **locks** to `@tanstack/ai` under a dedicated `@tanstack/ai/locks` subpath, and nest persistence agent skills like `ai-core`.
+  - **`LockStore` / `InMemoryLockStore` / `LocksCapability` / `getLocks` / `provideLocks` / `withLocks`** live in `@tanstack/ai/locks` (not the main `@tanstack/ai` barrel, and not `@tanstack/ai-persistence`).
+  - `@tanstack/ai-sandbox` consumes the core `LocksCapability` token (no local lock re-export).
+  - The locks agent skill moves with the code: `ai-core/locks` in `@tanstack/ai`, not `ai-persistence/locks`.
+  - Agent skills under `@tanstack/ai-persistence` nest as `skills/ai-persistence/{stores,server,build-*-adapter}/`.
+  - Docs: locks guide under advanced middleware.
+
+- [#972](https://github.com/TanStack/ai/pull/972) [`478a4da`](https://github.com/TanStack/ai/commit/478a4da3756e0de09548f2902da3b45748c27b52) - Rework tool-call fan-out budgets as middleware hooks (unreleased [#965](https://github.com/TanStack/ai/issues/965) API).
+  - **Remove** (never released): `maxToolCalls()` strategy and `chat({ maxToolCallsPerTurn })`
+  - **Add** `onShouldContinue` middleware hook so policies can stop further agent turns without aborting
+  - **Keep** `AgentLoopState.toolCallCount` / `lastTurnToolCallCount` for strategies and middleware
+  - Tool-call budgets are an **app-owned middleware recipe** (docs), not a built-in export
+
+  ```ts
+  import { chat, maxIterations, type ChatMiddleware } from '@tanstack/ai'
+
+  function toolCallBudget({
+    max,
+    maxPerTurn,
+  }: {
+    max?: number
+    maxPerTurn?: number
+  }): ChatMiddleware {
+    let perTurn = 0
+    return {
+      onIteration: () => {
+        perTurn = 0
+      },
+      onToolPhaseComplete: () => {
+        perTurn = 0
+      },
+      onBeforeToolCall: () => {
+        if (maxPerTurn == null) return
+        if (++perTurn > maxPerTurn) {
+          return {
+            type: 'skip',
+            result: {
+              error: `Skipped: exceeded maxToolCallsPerTurn (${maxPerTurn})`,
+            },
+          }
+        }
+      },
+      onShouldContinue: (_ctx, state) =>
+        max != null && state.toolCallCount >= max ? false : undefined,
+    }
+  }
+
+  chat({
+    adapter,
+    messages,
+    tools,
+    agentLoopStrategy: maxIterations(20),
+    middleware: [toolCallBudget({ maxPerTurn: 10, max: 20 })],
+  })
+  ```
+
+- [#541](https://github.com/TanStack/ai/pull/541) [`347b61b`](https://github.com/TanStack/ai/commit/347b61bc788bb816bbd12287c1a426ca7def00f4) - **Add server-side memory via a `recall`/`save` adapter contract in `@tanstack/ai-memory`.**
+
+  Memory is now a single, provider-agnostic contract with two verbs — `recall` and
+  `save` — which is the shape every memory backend (in-process, Redis, and hosted
+  vendors) naturally exposes. `memoryMiddleware` recalls relevant memory into the
+  system prompt (and optionally injects vendor tools) before the model runs, then
+  defers `save` of the finished turn via `ctx.defer` so streaming is never blocked.
+  Extraction, ranking, and rendering live inside each adapter — the middleware is thin.
+
+  `@tanstack/ai-memory` (new package) — everything ships here:
+  - Root: `memoryMiddleware`, the `MemoryAdapter` contract
+    (`recall` / `save` / optional `inspect` / `listFacts`), and the `MemoryScope` /
+    `MemoryTurn` / `RecallResult` / `SaveReceipt` types.
+  - `@tanstack/ai-memory/in-memory` → `inMemory()` — zero-dependency adapter for dev,
+    tests, and single-process demos. Pass an `embedder` for semantic scoring and/or an
+    `extract` function to persist derived facts.
+  - `@tanstack/ai-memory/redis` → `redis({ redis, prefix? })` — production adapter for
+    plain Redis. `ioredis` wires in directly; `redis` (node-redis v4+) via the
+    `fromNodeRedis(client)` wrapper. Both are optional peer dependencies.
+  - `@tanstack/ai-memory/hindsight` → `hindsight()`, `@tanstack/ai-memory/mem0` →
+    `mem0()`, `@tanstack/ai-memory/honcho` → `honcho()` — hosted-vendor adapters. Their
+    SDKs (`@vectorize-io/hindsight-client`, `@honcho-ai/sdk`) are optional peers loaded
+    lazily; mem0 talks to its server over plain HTTP (no SDK). Vendors can expose LLM
+    tools through `recall` (e.g. hindsight's retain/recall/reflect).
+  - A shared `recall`/`save` contract-test suite (`@tanstack/ai-memory/tests/contract`)
+    that any adapter — including third-party ones — can run.
+
+  `@tanstack/ai`:
+  - **Removes the (unreleased) `@tanstack/ai/memory` subpath.** The middleware,
+    contract, and helpers all moved to `@tanstack/ai-memory`.
+
+  `@tanstack/ai-event-client`:
+  - The five `memory:*` devtools events (`memory:retrieve:started` / `:completed`,
+    `memory:persist:started` / `:completed`, `memory:error`) now carry recall/save
+    payloads (adapter id, fragment/receipt counts, `phase: 'recall' | 'save'`).
+
+- [#955](https://github.com/TanStack/ai/pull/955) [`7c7aa09`](https://github.com/TanStack/ai/commit/7c7aa09a7402b45e6285ebc78a606131aec3e288) - Resumable streams: reconnect to an in-flight SSE **or NDJSON** response without
+  re-running the provider.
+
+  `toServerSentEventsResponse` and `toHttpResponse` both accept a
+  `durability: { adapter, batch }` option. The adapter (`StreamDurability`)
+  records every chunk to an ordered log before delivery and tags each event with
+  an opaque, adapter-owned offset — an SSE `id:` line, or the `id` of an NDJSON
+  `{ id, chunk }` envelope (NDJSON has no native event-id). A reconnect
+  (`Last-Event-ID`) or an explicit `?offset` read replays strictly after that
+  offset from the log — the lazy provider stream is never iterated on resume.
+  Producers terminalize the log on cancellation and failure (`RUN_ERROR` append
+  - `close()`) and on completion when the source stream emits its own terminal
+    event (`chat()` always does), so readers are never parked on a dead run.
+
+  Two adapters ship: `memoryStream(request)` in `@tanstack/ai` (process-local,
+  for development and tests) and the new `@tanstack/ai-durable-stream` package,
+  a Durable Streams protocol adapter for production backends.
+
+  For the `GET` handler that a reload or a second tab reconnects to,
+  `resumeServerSentEventsResponse({ adapter })` and `resumeHttpResponse({ adapter })`
+  replay a run straight from the durability log. They need no producer stream and
+  return a 400 when the request carries no resume offset.
+
+  On the client, all four HTTP adapters are now resumable — `fetchServerSentEvents`,
+  `fetchHttpStream`, `xhrServerSentEvents`, and `xhrHttpStream`. Each tracks the
+  per-event offset, auto-reconnects with `Last-Event-ID`, de-duplicates the
+  replayed prefix, and exposes `joinRun(runId)` to attach to an in-flight or
+  finished run from the start (read-only GET with `offset=-1`). Untagged streams
+  behave exactly as before. A durable run that ends with no terminal event and no
+  forward progress now throws `DurableStreamIncompleteError` instead of hanging.
+
+  Reconnection and durability are bounded so failures surface rather than hang or
+  loop:
+  - `memoryStream` evicts completed logs after a grace window (unbounded growth
+    is gone); resuming an expired/unknown run throws, and a from-start join to a
+    run that never produces fails after `MemoryStreamOptions.firstChunkDeadlineMs`.
+  - all four HTTP adapters accept `reconnect: { maxAttempts, delayMs }` — a
+    throttle plus a ceiling on CONSECUTIVE no-progress reconnects (default 5;
+    forward progress resets it) that fails with the new `StreamReconnectLimitError`
+    instead of reconnecting endlessly, without penalizing a healthy long-lived run.
+  - `durableStream` accepts `reconnect: { maxReadFailures, delayMs }` to bound its
+    read-retry loop, and `server` is now optional when `fetch` is provided (e.g. a
+    Cloudflare service binding).
+  - `toServerSentEventsResponse` accepts `debug` to record durability terminal /
+    close failures server-side, where a replaying joiner cannot observe them.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Make a mid-stream reload resume the same conversation cleanly.
+  - `withPersistence` now persists the pending turn at the start of a run (so a
+    reload during generation still shows the user's message), stamps each
+    assistant turn with its stream `messageId`, and accepts
+    `withPersistence(persistence, { snapshotStreaming: true })` to also persist the
+    in-progress reply on a throttled interval (`snapshotIntervalMs`, default
+    `1000`) for partial-output durability.
+  - `ModelMessage` gains an optional `id`; `modelMessagesToUIMessages` preserves
+    it, so a hydrated message keeps the same identity as its live stream.
+  - On reload, the chat client rebuilds an in-flight assistant turn from the
+    delivery log (replaying from the start and applying the buffered backlog in one
+    batch) instead of reconciling against the persisted partial, so the reload
+    shows one clean bubble that catches up and continues rather than a frozen or
+    duplicated partial.
+
+- [#980](https://github.com/TanStack/ai/pull/980) [`4ce7600`](https://github.com/TanStack/ai/commit/4ce7600d5b543d4b7e3bd6d63cdf5ecf91cdeeaa) - **Add a shared `Scope` identity type to `@tanstack/ai`.**
+
+  `Scope` is the single identity/isolation vocabulary for the subsystems that
+  persist or recall per-conversation data — `@tanstack/ai-persistence` and
+  `@tanstack/ai-memory`. Rather than each subsystem inventing its own notion of
+  "whose data is this?", both import one type:
+
+  ```ts
+  interface Scope {
+    threadId: string // required — the single conversation key (same as ctx.threadId)
+    userId?: string // durable end-user identity; required in practice for multi-user apps
+    tenantId?: string // multi-tenant boundary
+    namespace?: string // reserved logical partition; no subsystem keys on it yet
+  }
+  ```
+
+  `threadId` is the one conversation key across the codebase (matching
+  `ChatMiddlewareContext.threadId`, with `conversationId` already deprecated in
+  favor of it) — subsystems must not introduce a second name (`sessionId`, …) for
+  the same concept. Every field is an isolation boundary and must be derived
+  server-side from trusted session state, never from client input.
+
+  Introduced ahead of the persistence and memory packages so both share one settled
+  identity contract. `@tanstack/ai-memory` now aliases `MemoryScope` to `Scope`
+  (see the memory-scope-threadid changeset).
+
+### Patch Changes
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Fix `memoryStream` truncating a tool-calling (agent-loop) run at its first tool
+  call.
+
+  An agent-loop run emits one `RUN_STARTED`/`RUN_FINISHED` pair per iteration
+  (`finishReason: "tool_calls"` for a turn that calls a tool, then `"stop"` for the
+  final answer). `memoryStream` treated the _first_ terminal chunk as the end of
+  the log — both marking the log complete on append and ending the reader on read —
+  so a run that called a tool was delivered only up to that first `RUN_FINISHED`:
+  the tool result and everything after (the model's actual answer) never reached
+  the client, leaving the tool call stuck "running" and the reply missing, on the
+  initial stream and on any reconnect/reload.
+
+  Completion is now driven solely by the producer calling `close()` (which it does
+  on every exit — the documented `StreamDurability.close` contract, honored by
+  `toServerSentEventsResponse`/`resumeServerSentEventsResponse` and detached
+  producers). The reader tails across per-iteration terminals and ends when the
+  producer closes, so a tool-calling run is delivered in full — live, on rejoin,
+  and on a server-authoritative reload.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - **Make every bundled Agent Skill discoverable by TanStack Intent.**
+
+  Intent finds skills by scanning `node_modules` for packages that carry the
+  `tanstack-intent` keyword, and can only load what npm actually publishes. Three
+  packages shipped skills that failed one half of that contract:
+  - `@tanstack/ai-mcp` wrote its skill into a `skills/` directory that was missing
+    from `files`, so it was never published at all.
+  - `@tanstack/ai-memory` and `@tanstack/ai-sandbox` published their skills but
+    lacked the keyword, so Intent never looked at them.
+
+  All three now publish `skills` and carry the keyword, matching `@tanstack/ai`,
+  `@tanstack/ai-code-mode`, and `@tanstack/ai-persistence`.
+
+  The client persistence skill also moves from `@tanstack/ai-persistence` to
+  `@tanstack/ai` as `ai-core/client-persistence`. It teaches
+  `localStoragePersistence` / `sessionStoragePersistence` / `indexedDBPersistence`
+  and the `persistence` option on `useChat` — all of which live in the framework
+  packages, not in `@tanstack/ai-persistence`. An app doing browser-only
+  persistence never installs that package, so the guidance was unreachable for
+  exactly the people who needed it, and `ai-core` routed to a path that did not
+  exist on disk. Skills now follow the code that owns them.
+
+- Updated dependencies [[`347b61b`](https://github.com/TanStack/ai/commit/347b61bc788bb816bbd12287c1a426ca7def00f4), [`347b61b`](https://github.com/TanStack/ai/commit/347b61bc788bb816bbd12287c1a426ca7def00f4), [`cc88874`](https://github.com/TanStack/ai/commit/cc88874ecb0639daa1f8a8c32be5dcc9b2749371)]:
+  - @tanstack/ai-event-client@0.7.0
+
 ## 0.42.0
 
 ### Minor Changes

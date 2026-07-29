@@ -1,5 +1,59 @@
 # @tanstack/ai-vue
 
+## 0.16.0
+
+### Minor Changes
+
+- [#970](https://github.com/TanStack/ai/pull/970) [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a) - Adopt the AG-UI interrupt lifecycle for tool approvals, generic responses, and
+  client-tool execution, with typed bound resolvers, atomic batches, and
+  structured errors. Interrupts run ephemerally by resuming from the full client
+  message history in a fresh child run — no persistence required.
+
+  This changes native approval and client-tool streams from legacy custom events
+  to snapshot-plus-`RUN_FINISHED` interrupt outcomes. Deprecated
+  `pendingInterrupts`, `addToolApprovalResponse`, raw `resumeInterrupts`, and
+  legacy event readers remain as limited compatibility surfaces for migration;
+  `addToolResult` remains supported.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - Add browser-refresh durability to the `persistence` option.
+
+  The client `persistence` adapter now stores one combined record per chat id, the message transcript plus a resume snapshot, so a full page reload restores the conversation, rehydrates any pending interrupt, and rejoins a run that was still streaming (via `joinRun`, when the connection is durability-backed). A bare `UIMessage[]` from an older store is still read for backward compatibility.
+
+  **If you hand-rolled a `persistence` adapter, update its write path.** `setItem` now receives the combined `{ messages, resume? }` record where it used to receive a bare `UIMessage[]`, so an adapter that assumed an array will write the new shape and then fail to parse it back — and because adapter reads are best-effort, the failure is silent: the conversation simply does not restore. Read `{ messages, resume? }` in `getItem` (a bare array is still accepted), or switch to the `localStoragePersistence` / `sessionStoragePersistence` / `indexedDBPersistence` adapters below, which handle it for you.
+
+  The `persistence` option also accepts `true` for a server-authoritative chat: the client caches nothing, and on mount it hydrates the thread from the server by its `threadId` (painting the stored transcript and tailing any run still generating). Use it to keep large transcripts off the client while the server stays authoritative for history; it needs a connection with a `hydrate` handler and a server GET endpoint (`reconstructChat`). Passing an adapter is client-authoritative; omitting `persistence` (or `false`) is ephemeral, in-memory only.
+
+  New web storage adapters are exported for this: `localStoragePersistence`, `sessionStoragePersistence`, and `indexedDBPersistence` (plus `StorageUnavailableError` and the `ChatPersistedState` / `ChatStorageAdapter` / `ChatPersistenceOption` types). Because durability rides the existing `persistence` option, every framework integration (`react`, `solid`, `vue`, `svelte`, `angular`, `preact`) gets it with no framework-specific code.
+
+- [#984](https://github.com/TanStack/ai/pull/984) [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a) - The chat hooks no longer take an `id` option — a hook's identity is its `threadId`.
+
+  `useChat` / `createChat` previously accepted a separate `id` that keyed client
+  persistence and named the devtools instance, defaulting to a framework
+  `useId()` when omitted. That meant persistence keyed on an ephemeral render-tree
+  id even when you passed a stable `threadId`, so a reload found nothing under the
+  thread's key.
+
+  Now the `threadId` is the single identity:
+  - The hooks drop the `id` option. Pass `threadId` to persist a conversation and
+    restore it on reload; omit it for an ephemeral chat.
+  - Persistence keys on `threadId` (unchanged in `ChatClient`, which already
+    resolved `id ?? threadId` — the hooks simply stop overriding it).
+  - `ChatClient.uniqueId` (the devtools instance id) now falls back to `threadId`
+    instead of a generated id, so a thread shows up in devtools under its own id.
+  - Changing `threadId` on a mounted `useChat` (react/preact/solid) now recreates
+    the client so the new thread takes effect; previously the change was ignored.
+
+  `ChatClient` still accepts `id` directly as a lower-level escape hatch for
+  keying storage separately from the wire thread; only the framework hooks drop it.
+
+  Migration: replace `useChat({ id })` with `useChat({ threadId })`.
+
+### Patch Changes
+
+- Updated dependencies [[`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`347b61b`](https://github.com/TanStack/ai/commit/347b61bc788bb816bbd12287c1a426ca7def00f4), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a), [`3301398`](https://github.com/TanStack/ai/commit/330139878958fc5c5c167a69347c884fa35b792a), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`478a4da`](https://github.com/TanStack/ai/commit/478a4da3756e0de09548f2902da3b45748c27b52), [`347b61b`](https://github.com/TanStack/ai/commit/347b61bc788bb816bbd12287c1a426ca7def00f4), [`cc88874`](https://github.com/TanStack/ai/commit/cc88874ecb0639daa1f8a8c32be5dcc9b2749371), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`7c7aa09`](https://github.com/TanStack/ai/commit/7c7aa09a7402b45e6285ebc78a606131aec3e288), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`4ce7600`](https://github.com/TanStack/ai/commit/4ce7600d5b543d4b7e3bd6d63cdf5ecf91cdeeaa), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a), [`4ab149f`](https://github.com/TanStack/ai/commit/4ab149fd46a1cf55691266cdd118fdc9999c0b2a)]:
+  - @tanstack/ai@0.43.0
+  - @tanstack/ai-client@0.23.0
+
 ## 0.15.1
 
 ### Patch Changes
